@@ -1,0 +1,83 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'com.javadumper'
+version = '1.0.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // ASM 用于字节码操作
+    implementation 'org.ow2.asm:asm:9.6'
+    implementation 'org.ow2.asm:asm-commons:9.6'
+    implementation 'org.ow2.asm:asm-util:9.6'
+    
+    // Javassist 用于动态修改类
+    implementation 'org.javassist:javassist:3.30.2-GA'
+    
+    // 命令行参数解析
+    implementation 'commons-cli:commons-cli:1.6.0'
+    
+    // 日志
+    implementation 'org.slf4j:slf4j-api:2.0.9'
+    implementation 'ch.qos.logback:logback-classic:1.4.14'
+    
+    // 测试
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.1'
+}
+
+application {
+    mainClass = 'com.javadumper.Main'
+}
+
+// 创建 Agent JAR
+task agentJar(type: Jar) {
+    archiveBaseName = 'dumper-agent'
+    from sourceSets.main.output
+    manifest {
+        attributes(
+            'Agent-Class': 'com.javadumper.agent.DumperAgent',
+            'Premain-Class': 'com.javadumper.agent.DumperAgent',
+            'Can-Redefine-Classes': 'true',
+            'Can-Retransform-Classes': 'true',
+            'Can-Set-Native-Method-Prefix': 'true'
+        )
+    }
+}
+
+// 创建包含所有依赖的 Fat JAR
+task fatJar(type: Jar) {
+    archiveBaseName = 'java-dumper-all'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes(
+            'Main-Class': 'com.javadumper.Main',
+            'Agent-Class': 'com.javadumper.agent.DumperAgent',
+            'Premain-Class': 'com.javadumper.agent.DumperAgent',
+            'Can-Redefine-Classes': 'true',
+            'Can-Retransform-Classes': 'true'
+        )
+    }
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    with jar
+}
+
+test {
+    useJUnitPlatform()
+}
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}
+
