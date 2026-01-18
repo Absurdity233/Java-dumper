@@ -1,5 +1,6 @@
 package com.javadumper;
 
+import com.javadumper.client.AgentClient;
 import com.javadumper.core.*;
 import org.apache.commons.cli.*;
 import org.slf4j.Logger;
@@ -152,12 +153,44 @@ public class Main {
             .desc("Agent参数")
             .build());
         
+        options.addOption(Option.builder()
+            .longOpt("monitor")
+            .desc("实时监控JVM状态")
+            .build());
+        
+        options.addOption(Option.builder()
+            .longOpt("interval")
+            .hasArg()
+            .argName("SECONDS")
+            .desc("监控间隔秒数")
+            .build());
+        
+        options.addOption(Option.builder()
+            .longOpt("connect")
+            .hasArg()
+            .argName("HOST:PORT")
+            .desc("连接到Agent服务器")
+            .build());
+        
+        options.addOption(Option.builder()
+            .longOpt("server")
+            .hasArg()
+            .argName("PORT")
+            .desc("在目标JVM启动Agent服务器")
+            .build());
+        
         return options;
     }
 
     private static void executeCommand(CommandLine cmd) throws Exception {
         if (cmd.hasOption("list")) {
             listProcesses();
+            return;
+        }
+        
+        if (cmd.hasOption("connect")) {
+            String addr = cmd.getOptionValue("connect");
+            connectToAgent(addr);
             return;
         }
         
@@ -170,6 +203,29 @@ public class Main {
                 return;
             }
             showHeapInfo(pid);
+            return;
+        }
+        
+        if (cmd.hasOption("monitor")) {
+            if (pid == null) {
+                System.out.println("请使用 -p/--pid 指定目标进程");
+                return;
+            }
+            int interval = 5;
+            if (cmd.hasOption("interval")) {
+                interval = Integer.parseInt(cmd.getOptionValue("interval"));
+            }
+            startMonitor(pid, interval);
+            return;
+        }
+        
+        if (cmd.hasOption("server")) {
+            if (pid == null) {
+                System.out.println("请使用 -p/--pid 指定目标进程");
+                return;
+            }
+            int port = Integer.parseInt(cmd.getOptionValue("server"));
+            startAgentServer(pid, port);
             return;
         }
         
@@ -226,6 +282,68 @@ public class Main {
     private static void listProcesses() {
         JvmProcessManager manager = new JvmProcessManager();
         manager.printProcesses();
+    }
+
+    private static void startMonitor(String pid, int intervalSeconds) throws Exception {
+        JvmMonitor monitor = new JvmMonitor(pid);
+        monitor.connect();
+        
+        System.out.println("开始监控JVM (PID: " + pid + ")，间隔 " + intervalSeconds + " 秒");
+        System.out.println("按 Ctrl+C 停止监控\n");
+        
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("\n停止监控...");
+            monitor.disconnect();
+        }));
+        
+        monitor.startMonitoring(intervalSeconds, snapshot -> {
+            System.out.printf("[%tT] Heap: %s/%s (%.1f%%) | Threads: %d | ",
+                snapshot.timestamp,
+                formatBytes(snapshot.memory.heapUsed),
+                formatBytes(snapshot.memory.heapMax),
+                snapshot.memory.heapMax > 0 ? snapshot.memory.heapUsed * 100.0 / snapshot.memory.heapMax : 0,
+                snapshot.threads.threadCount);
+            
+            if (snapshot.cpu.processCpuLoad >= 0) {
+                System.out.printf("CPU: %.1f%%", snapshot.cpu.processCpuLoad * 100);
+            }
+            System.out.println();
+        });
+        
+        Thread.currentThread().join();
+    }
+
+    private static void startAgentServer(String pid, int port) throws Exception {
+        JvmProcessManager manager = new JvmProcessManager();
+        String agentPath = findAgentJar();
+        
+        if (agentPath == null) {
+            System.out.println("未找到Agent JAR文件，请先构建项目: gradle agentJar");
+            return;
+        }
+        
+        String agentArgs = "server=" + port;
+        manager.loadAgent(pid, agentPath, agentArgs);
+        System.out.println("Agent服务器已在进程 " + pid + " 的端口 " + port + " 启动");
+        System.out.println("使用 --connect localhost:" + port + " 连接");
+    }
+
+    private static void connectToAgent(String address) throws Exception {
+        String[] parts = address.split(":");
+        String host = parts[0];
+        int port = Integer.parseInt(parts[1]);
+        
+        try (AgentClient client = new AgentClient(host, port)) {
+            client.connect();
+            client.startInteractiveSession();
+        }
+    }
+
+    private static String formatBytes(long bytes) {
+        if (bytes < 1024) return bytes + "B";
+        if (bytes < 1024 * 1024) return String.format("%.1fKB", bytes / 1024.0);
+        if (bytes < 1024 * 1024 * 1024) return String.format("%.1fMB", bytes / (1024.0 * 1024));
+        return String.format("%.2fGB", bytes / (1024.0 * 1024 * 1024));
     }
 
     private static void showHeapInfo(String pid) throws Exception {

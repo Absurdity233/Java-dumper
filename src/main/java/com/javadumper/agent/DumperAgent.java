@@ -1,5 +1,8 @@
 package com.javadumper.agent;
 
+import com.javadumper.core.HotSwapper;
+import com.javadumper.core.RuntimeClassDumper;
+
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
 import java.lang.instrument.UnmodifiableClassException;
@@ -19,28 +22,24 @@ public class DumperAgent {
     private static Instrumentation instrumentation;
     private static final Map<String, byte[]> originalClasses = new ConcurrentHashMap<>();
     private static final List<ClassFileTransformer> transformers = new ArrayList<>();
+    private static AgentServer server;
+    private static HotSwapper hotSwapper;
+    private static RuntimeClassDumper runtimeDumper;
 
-    /**
-     * 静态加载方式入口点（-javaagent:agent.jar）
-     */
     public static void premain(String agentArgs, Instrumentation inst) {
         System.out.println("[DumperAgent] Premain loaded with args: " + agentArgs);
         initialize(agentArgs, inst);
     }
-    
-    /**
-     * 动态加载方式入口点（VirtualMachine.loadAgent）
-     */
+
     public static void agentmain(String agentArgs, Instrumentation inst) {
         System.out.println("[DumperAgent] Agentmain loaded with args: " + agentArgs);
         initialize(agentArgs, inst);
     }
-    
-    /**
-     * 初始化Agent
-     */
+
     private static void initialize(String agentArgs, Instrumentation inst) {
         instrumentation = inst;
+        hotSwapper = new HotSwapper(inst);
+        runtimeDumper = new RuntimeClassDumper(inst);
         
         Map<String, String> args = parseArgs(agentArgs);
         
@@ -49,14 +48,25 @@ public class DumperAgent {
             executeCommand(command, args);
         }
         
+        String serverPort = args.get("server");
+        if (serverPort != null) {
+            startServer(Integer.parseInt(serverPort));
+        }
+        
         System.out.println("[DumperAgent] Agent initialized successfully");
         System.out.println("[DumperAgent] Can redefine classes: " + inst.isRedefineClassesSupported());
         System.out.println("[DumperAgent] Can retransform classes: " + inst.isRetransformClassesSupported());
     }
-    
-    /**
-     * 执行命令
-     */
+
+    private static void startServer(int port) {
+        try {
+            server = new AgentServer(port, instrumentation);
+            server.start();
+        } catch (Exception e) {
+            System.err.println("[DumperAgent] Failed to start server: " + e.getMessage());
+        }
+    }
+
     private static void executeCommand(String command, Map<String, String> args) {
         switch (command.toLowerCase()) {
             case "list-classes":
@@ -65,14 +75,47 @@ public class DumperAgent {
             case "dump-class":
                 dumpClass(args.get("class"));
                 break;
+            case "dump-runtime":
+                dumpRuntimeClass(args.get("class"), args.get("output"));
+                break;
             case "trace":
                 enableTracing(args.get("class"), args.get("method"));
+                break;
+            case "add-timing":
+                addTiming(args.get("class"), args.get("method"));
                 break;
             case "info":
                 printAgentInfo();
                 break;
             default:
                 System.out.println("[DumperAgent] Unknown command: " + command);
+        }
+    }
+
+    private static void dumpRuntimeClass(String className, String outputDir) {
+        if (className == null) {
+            System.out.println("[DumperAgent] Class name required");
+            return;
+        }
+        try {
+            String dir = outputDir != null ? outputDir : RuntimeClassDumper.generateOutputDir();
+            String path = runtimeDumper.dumpClassToFile(className, dir);
+            System.out.println("[DumperAgent] Runtime class dumped to: " + path);
+        } catch (Exception e) {
+            System.err.println("[DumperAgent] Dump failed: " + e.getMessage());
+        }
+    }
+
+    private static void addTiming(String className, String methodName) {
+        if (className == null || methodName == null) {
+            System.out.println("[DumperAgent] Class and method name required");
+            return;
+        }
+        try {
+            hotSwapper.addMethodTiming(className, methodName);
+            System.out.println("[DumperAgent] Timing added to: " + className + "." + methodName);
+        } catch (Exception e) {
+            System.err.println("[DumperAgent] Add timing failed: " + e.getMessage());
         }
     }
 
